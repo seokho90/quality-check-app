@@ -2,10 +2,11 @@ import streamlit as st
 import pdfplumber
 import re
 import pandas as pd
+import pytesseract
+from pdf2image import convert_from_bytes
 
 # --- 1. [별표 5] 법정 시설 및 인력 기준 산출 ---
 def check_facility_and_personnel(cost, area):
-    """건설공사 품질관리를 위한 시설 및 건설기술인 배치기준"""
     if cost >= 1000 or area >= 50000:
         return "특급 품질관리", 50, ["특급 1명(경력 3년 이상)", "중급 1명 이상", "초급 1명 이상"]
     elif cost >= 500 or area >= 30000:
@@ -16,44 +17,39 @@ def check_facility_and_personnel(cost, area):
         return "초급 품질관리", 18, ["초급 1명 이상"]
 
 # --- 2. 종합 법령/지침 기반 키워드 룰셋 ---
-# [별표 1], [별표 3], [별지 2] 품질관리계획서 10대 작성기준 및 적절성 확인 요령
 qm_10_rules = {
-    "1. 일반사항 (작성근거, 개정현황)": ["작성근거", "개정현황", "문서번호"],
-    "2. 적용범위 및 인용표준 (KS Q ISO 등)": ["적용범위", "인용표준", "KS Q ISO"],
+    "1. 일반사항": ["작성근거", "개정현황", "문서번호"],
+    "2. 적용범위 및 인용표준": ["적용범위", "인용표준", "ISO"],
     "3. 용어 정의": ["용어", "정의"],
-    "4. 조직 상황 (이해관계자, 프로세스)": ["정보", "이해관계자", "프로세스", "요구사항"],
-    "5. 리더십 (품질방침, 권한)": ["품질방침", "책임", "권한", "조직"],
-    "6. 기획 (리스크, 품질목표)": ["리스크", "기회", "품질목표", "추진계획"],
-    "7. 지원 (인력, 장비, 교육, 의사소통)": ["자원관리", "모니터링", "역량", "적격성", "교육훈련", "의사소통", "문서화된 정보"],
-    "8. 운용 (설계, 구매, 시공, 검사)": ["요구사항 검토", "설계관리", "기자재 구매", "하도급", "중점품질관리", "식별 및 추적", "보존", "검사 및 시험", "부적합 공사"],
-    "9. 성과관리 (고객만족, 심사)": ["고객만족", "분석 및 평가", "내부심사", "경영검토"],
-    "10. 개선 (시정조치)": ["부적합", "시정조치", "지속적 개선"]
+    "4. 조직 상황": ["정보", "이해관계자", "프로세스", "요구사항"],
+    "5. 리더십": ["품질방침", "책임", "권한", "조직"],
+    "6. 기획": ["리스크", "기회", "품질목표", "추진계획"],
+    "7. 지원": ["자원관리", "모니터링", "역량", "적격성", "교육훈련", "의사소통", "문서화된정보"],
+    "8. 운용": ["설계관리", "기자재구매", "하도급", "중점품질관리", "식별및추적", "검사및시험", "부적합공사"],
+    "9. 성과관리": ["고객만족", "분석및평가", "내부심사", "경영검토"],
+    "10. 개선": ["부적합", "시정조치", "지속적개선"]
 }
 
-# [별표 9] 품질시험계획 필수 기재사항
 qt_basic_rules = {
-    "1. 공사 개요": ["공사명", "시공자", "현장 대리인"],
-    "2. 시험 계획": ["공종", "시험 종목", "계획물량", "시험 빈도", "시험 횟수"],
-    "3. 시험 시설": ["장비명", "규격", "단위", "수량", "배치 평면도"],
+    "1. 공사 개요": ["공사명", "시공자", "현장대리인"],
+    "2. 시험 계획": ["공종", "시험종목", "계획물량", "시험빈도", "시험횟수"],
+    "3. 시험 시설": ["장비명", "규격", "단위", "수량", "배치평면도"],
     "4. 품질관리 인력": ["성명", "등급", "배치계획", "자격", "경력"]
 }
 
-# [별표 2] 건설공사 품질시험기준 (주요 공종별 필수 시험종목)
 qt_test_items = {
     "토공사 및 기초공사": ["함수비", "밀도", "다짐", "평판재하", "현장밀도"],
-    "철근콘크리트공사": ["슬럼프", "공기량", "압축강도", "염화물", "단위수량", "항복강도", "인장강도"],
+    "철근콘크리트공사": ["슬럼프", "공기량", "압축강도", "염화물", "항복강도", "인장강도"],
     "철강구조물공사": ["내부결함", "초음파탐상", "인장강도", "용접부"],
     "아스팔트 포장공사": ["마샬안정도", "역청함유량", "코어", "두께", "평탄성"]
 }
 
-# [별표 6] 시험장비 보유기준 (주요 필수/선택 장비)
 equipment_rules = {
-    "필수/기본 장비": ["만능시험기", "건조로", "저울", "체가름시험기", "모르타르혼합기", "슬럼프"],
-    "토질/골재 장비": ["비중 시험용기구", "현장밀도시험기", "자동염화물", "안정성 시험용기구"],
+    "필수/기본 장비": ["만능시험기", "건조로", "저울", "체가름시험기", "모르타르혼합기"],
+    "토질/골재 장비": ["비중", "현장밀도시험기", "염화물", "안정성"],
     "아스팔트 장비": ["마샬안정도시험기", "항온수조", "아스팔트함량시험기"]
 }
 
-# [별지 1] 품질관리계획서 검토·승인서 양식 요건
 approval_rules = {
     "승인 절차 명시": ["검토", "승인", "적정", "조건부적정", "부적정", "시정요구", "조치확인"]
 }
@@ -86,22 +82,35 @@ def analyze_checklist(text, rules, threshold=0.6):
 st.set_page_config(page_title="건설공사 품질시험계획서 통합 검증", page_icon="🏗️", layout="wide")
 
 st.title("🏗️ 품질관리/시험계획서 법령 통합 교차검증 시스템")
-st.markdown("""
-**적용 법령 및 지침:** 건설공사 품질관리 업무지침, 건설기술 진흥법 시행령·시행규칙 (별표 1~9, 별지 1~2) 전체
-""")
+st.markdown("**적용 법령 및 지침:** 건설공사 품질관리 업무지침, 건설기술 진흥법 시행령·시행규칙 전체")
 st.divider()
 
-uploaded_file = st.file_uploader("검증할 계획서 원본(PDF)을 업로드 하세요.", type="pdf")
+uploaded_file = st.file_uploader("검증할 계획서 원본(또는 스캔본 PDF)을 업로드 하세요.", type="pdf")
 
 if uploaded_file is not None:
-    with st.spinner("방대한 법정 기준(총 9개 별표, 2개 별지)과 문서를 대조 중입니다..."):
+    with st.spinner("문서를 스캔 중입니다..."):
         text = ""
         try:
+            # 1차 시도: 일반 텍스트 추출
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
                     extracted = page.extract_text()
                     if extracted:
                         text += extracted + "\n"
+            
+            # 2차 시도: 글자가 너무 적으면 스캔본으로 간주하여 OCR 수행
+            if len(text.strip()) < 50:
+                st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다. (시간이 조금 더 걸립니다.)")
+                uploaded_file.seek(0)
+                images = convert_from_bytes(uploaded_file.read())
+                
+                # 프로그레스 바 추가
+                progress_bar = st.progress(0)
+                for i, img in enumerate(images):
+                    text += pytesseract.image_to_string(img, lang='kor+eng') + "\n"
+                    progress_bar.progress((i + 1) / len(images))
+                progress_bar.empty()
+                
         except Exception as e:
             st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
             st.stop()
@@ -117,9 +126,8 @@ if uploaded_file is not None:
 
         level, req_lab_size, req_personnel = check_facility_and_personnel(cost, area)
         
-        st.success("✅ 문서 스캔 및 통합 법령 대조가 완료되었습니다.")
+        st.success("✅ 문서 분석 및 법령 대조가 완료되었습니다.")
         
-        # 탭 구성 (4개 영역으로 세분화)
         t1, t2, t3, t4 = st.tabs([
             "1️⃣ 기본 규모 및 시설(별표5,9)", 
             "2️⃣ 품질관리계획 적절성(별지2, 별표1,3)", 
@@ -152,15 +160,13 @@ if uploaded_file is not None:
 
         with t2:
             st.subheader("📋 품질관리계획 적절성 확인 (10대 핵심항목)")
-            st.markdown("[별표 1] 품질관리계획서 작성기준 및 [별지 2] 확인점검표 요건 대조")
             df_qm = analyze_checklist(text, qm_10_rules, 0.5)
             st.dataframe(df_qm.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
 
         with t3:
             st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 점검")
-            st.markdown("[별표 2] 건설공사 품질시험기준 및 [별표 6] 시험장비 보유기준 대조")
             st.write("##### 1. 공종별 주요 시험종목 누락 점검")
-            df_test = analyze_checklist(text, qt_test_items, 0.4) # 공종에 따라 일부만 해당될 수 있으므로 임계값 조정
+            df_test = analyze_checklist(text, qt_test_items, 0.4) 
             st.dataframe(df_test.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
             
             st.write("##### 2. 필수 시험장비 보유 점검")
@@ -169,6 +175,5 @@ if uploaded_file is not None:
 
         with t4:
             st.subheader("📝 검토 및 승인 절차 (별지 1 기준)")
-            st.markdown("[별지 1] 품질관리계획서 검토·승인서에서 요구하는 판정(적정/조건부/부적정) 및 시정요구 체계 명시 여부")
             df_approval = analyze_checklist(text, approval_rules, 0.6)
             st.dataframe(df_approval.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
