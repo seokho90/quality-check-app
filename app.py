@@ -37,25 +37,33 @@ qt_basic_rules = {
     "4. 품질관리 인력": ["성명", "등급", "배치계획", "자격", "경력"]
 }
 
-qt_test_items = {
-    "토공사 및 기초공사": ["함수비", "밀도", "다짐", "평판재하", "현장밀도"],
-    "철근콘크리트공사": ["슬럼프", "공기량", "압축강도", "염화물", "항복강도", "인장강도"],
-    "철강구조물공사": ["내부결함", "초음파탐상", "인장강도", "용접부"],
-    "아스팔트 포장공사": ["마샬안정도", "역청함유량", "코어", "두께", "평탄성"]
-}
-
-equipment_rules = {
-    "필수/기본 장비": ["만능시험기", "건조로", "저울", "체가름시험기", "모르타르혼합기"],
-    "토질/골재 장비": ["비중", "현장밀도시험기", "염화물", "안정성"],
-    "아스팔트 장비": ["마샬안정도시험기", "항온수조", "아스팔트함량시험기"]
-}
-
 approval_rules = {
     "승인 절차 명시": ["검토", "승인", "적정", "조건부적정", "부적정", "시정요구", "조치확인"]
 }
 
-# --- 3. 텍스트 스캔 및 판정 엔진 ---
-def analyze_checklist(text, rules, threshold=0.6):
+# [별표 2] 건설공사 품질시험기준 세분화 (종별 상세 내역 반영)
+qt_test_items_detailed = {
+    "토공사(성토용 흙)": ["함수비", "입도", "밀도", "다짐", "액성한계", "소성한계", "노상토지지력비"],
+    "기초공사(말뚝)": ["동재하", "정재하", "압축강도"],
+    "콘크리트용 골재": ["밀도", "흡수율", "조립률", "0.08밀리미터체", "안정성", "마모율"],
+    "굳지 않은 콘크리트": ["슬럼프", "공기량", "염화물", "단위수량", "온도"],
+    "굳은 콘크리트": ["압축강도", "휨강도"],
+    "철근(콘크리트용 봉강)": ["항복점", "항복강도", "인장강도", "연신율", "치수"],
+    "철강구조물(강재/용접)": ["내부결함", "초음파탐상", "자분탐상", "항복점", "인장강도", "연신율"],
+    "아스팔트 혼합물": ["밀도", "안정성", "마샬안정도", "역청함유량", "코어"],
+    "가설기자재(강관/파이프)": ["압축하중", "인장하중", "휨하중"]
+}
+
+# [별표 6] 시험장비 보유기준 세분화
+equipment_rules_detailed = {
+    "공통/일반(인장·압축)": ["만능시험기", "압축시험기"],
+    "토질/골재 장비": ["건조로", "저울", "체가름시험기", "현장밀도시험기", "자동다짐기", "안정성시험용기구"],
+    "콘크리트 장비": ["모르타르혼합기", "항온수조", "슬럼프", "공기량시험기", "압축강도", "공시체"],
+    "아스팔트 장비": ["마샬안정도시험기", "아스팔트함량시험기", "코어채취기"]
+}
+
+# --- 3. 텍스트 스캔 및 판정 엔진 (상세 피드백용) ---
+def analyze_detailed_checklist(text, rules, threshold=0.5):
     results = []
     text_clean = text.replace(" ", "")
     for category, keywords in rules.items():
@@ -71,11 +79,13 @@ def analyze_checklist(text, rules, threshold=0.6):
         score = len(found) / len(keywords) if keywords else 0
         status = "✅ 적정" if score >= threshold else "🚨 보완필요"
         
-        detail = f"확인({len(found)}): {', '.join(found)}" if found else "확인불가"
+        # 상세 결과 메시지 포매팅
         if missing:
-            detail += f" / 누락({len(missing)}): {', '.join(missing)}"
+            detail = f"[확인됨] {', '.join(found)}\n[누락됨] {', '.join(missing)}\n👉 보완조치: 별표 기준에 따라 '{', '.join(missing)}' 항목을 계획서에 추가 기재 요망."
+        else:
+            detail = f"[확인됨] {', '.join(found)}\n👉 보완조치: 해당 공종의 법정 필수항목이 모두 명시됨."
             
-        results.append({"점검 항목": category, "검증 판정": status, "세부 내역": detail})
+        results.append({"종별(항목)": category, "판정": status, "세부 점검내역 및 수정권고": detail})
     return pd.DataFrame(results)
 
 # --- 4. 웹 UI 구성 ---
@@ -104,7 +114,6 @@ if uploaded_file is not None:
                 uploaded_file.seek(0)
                 images = convert_from_bytes(uploaded_file.read())
                 
-                # 프로그레스 바 추가
                 progress_bar = st.progress(0)
                 for i, img in enumerate(images):
                     text += pytesseract.image_to_string(img, lang='kor+eng') + "\n"
@@ -115,7 +124,6 @@ if uploaded_file is not None:
             st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
             st.stop()
 
-        # 프로젝트 규모 추출
         cost_match = re.search(r'총공사비.*?([\d,]+)\s*억', text)
         area_match = re.search(r'연면적.*?([\d,]+)\s*㎡', text)
         lab_size_match = re.search(r'시험실\s*규모.*?([\d.]+)\s*㎡', text)
@@ -129,10 +137,10 @@ if uploaded_file is not None:
         st.success("✅ 문서 분석 및 법령 대조가 완료되었습니다.")
         
         t1, t2, t3, t4 = st.tabs([
-            "1️⃣ 기본 규모 및 시설(별표5,9)", 
-            "2️⃣ 품질관리계획 적절성(별지2, 별표1,3)", 
-            "3️⃣ 공종별 시험/장비(별표2,6)",
-            "4️⃣ 검토/승인 절차(별지1)"
+            "1️⃣ 기본 규모 및 시설", 
+            "2️⃣ 품질관리계획 적절성", 
+            "3️⃣ 공종별 시험/장비 상세검증",
+            "4️⃣ 검토/승인 절차"
         ])
         
         def highlight_status(val):
@@ -155,25 +163,27 @@ if uploaded_file is not None:
                 st.write(f"- **최소 인력:** {', '.join(req_personnel)}")
                 
             st.markdown("#### [별표 9] 품질시험계획 필수항목 점검")
-            df_basic = analyze_checklist(text, qt_basic_rules, 0.7)
-            st.dataframe(df_basic.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
+            df_basic = analyze_detailed_checklist(text, qt_basic_rules, 0.7)
+            st.dataframe(df_basic.style.map(highlight_status, subset=['판정']), use_container_width=True)
 
         with t2:
             st.subheader("📋 품질관리계획 적절성 확인 (10대 핵심항목)")
-            df_qm = analyze_checklist(text, qm_10_rules, 0.5)
-            st.dataframe(df_qm.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
+            df_qm = analyze_detailed_checklist(text, qm_10_rules, 0.5)
+            st.dataframe(df_qm.style.map(highlight_status, subset=['판정']), use_container_width=True)
 
         with t3:
-            st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 점검")
-            st.write("##### 1. 공종별 주요 시험종목 누락 점검")
-            df_test = analyze_checklist(text, qt_test_items, 0.4) 
-            st.dataframe(df_test.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
+            st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 상세점검")
+            st.markdown("**(안내) 본 프로젝트에 해당하는 공종만 확인하시면 됩니다.**")
             
-            st.write("##### 2. 필수 시험장비 보유 점검")
-            df_equip = analyze_checklist(text, equipment_rules, 0.5)
-            st.dataframe(df_equip.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
+            st.write("##### 1. 공종별 주요 시험종목 누락 점검 ([별표 2] 기준)")
+            df_test = analyze_detailed_checklist(text, qt_test_items_detailed, 0.3)
+            st.table(df_test) # 긴 텍스트 출력을 위해 dataframe 대신 table 사용
+            
+            st.write("##### 2. 필수 시험장비 보유 점검 ([별표 6] 기준)")
+            df_equip = analyze_detailed_checklist(text, equipment_rules_detailed, 0.4)
+            st.table(df_equip)
 
         with t4:
-            st.subheader("📝 검토 및 승인 절차 (별지 1 기준)")
-            df_approval = analyze_checklist(text, approval_rules, 0.6)
-            st.dataframe(df_approval.style.map(highlight_status, subset=['검증 판정']), use_container_width=True)
+            st.subheader("📝 검토 및 승인 절차 ([별지 1] 기준)")
+            df_approval = analyze_detailed_checklist(text, approval_rules, 0.6)
+            st.dataframe(df_approval.style.map(highlight_status, subset=['판정']), use_container_width=True)
