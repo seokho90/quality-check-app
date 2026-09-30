@@ -92,96 +92,105 @@ st.title("🏗️ 품질관리/시험계획서 법령 통합 교차검증 시스
 st.markdown("**적용 법령 및 지침:** 건설공사 품질관리 업무지침, 건설기술 진흥법 시행령·시행규칙 전체")
 st.divider()
 
+# --- 입력 섹션 ---
+st.subheader("1️⃣ 검증 기본 정보 입력")
 uploaded_file = st.file_uploader("검증할 계획서 원본(또는 스캔본 PDF)을 업로드 하세요.", type="pdf")
 
-if uploaded_file is not None:
-    with st.spinner("문서를 스캔 중입니다..."):
-        text = ""
-        try:
-            with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages:
-                    extracted = page.extract_text()
-                    if extracted:
-                        text += extracted + "\n"
-            
-            if len(text.strip()) < 50:
-                st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다. (시간이 조금 더 걸립니다.)")
-                uploaded_file.seek(0)
-                images = convert_from_bytes(uploaded_file.read())
+col_input1, col_input2 = st.columns(2)
+with col_input1:
+    input_cost = st.number_input("총공사비 (단위: 억원)", min_value=0, value=0, step=10)
+with col_input2:
+    input_area = st.number_input("연면적 (단위: ㎡)", min_value=0, value=0, step=100)
+
+# 실행 버튼
+start_validation = st.button("🔍 교차검증 실행", type="primary", use_container_width=True)
+
+st.divider()
+
+# --- 검증 로직 실행 섹션 ---
+if start_validation:
+    if uploaded_file is None:
+        st.warning("⚠️ PDF 파일을 먼저 업로드해주세요.")
+    elif input_cost == 0 and input_area == 0:
+        st.warning("⚠️ 총공사비 또는 연면적을 올바르게 기입해주세요.")
+    else:
+        with st.spinner("문서를 스캔하고 법령과 대조 중입니다..."):
+            text = ""
+            try:
+                with pdfplumber.open(uploaded_file) as pdf:
+                    for page in pdf.pages:
+                        extracted = page.extract_text()
+                        if extracted:
+                            text += extracted + "\n"
                 
-                progress_bar = st.progress(0)
-                for i, img in enumerate(images):
-                    text += pytesseract.image_to_string(img, lang='kor+eng') + "\n"
-                    progress_bar.progress((i + 1) / len(images))
-                progress_bar.empty()
-                
-        except Exception as e:
-            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
-            st.stop()
+                # 스캔본 판별 및 OCR 처리
+                if len(text.strip()) < 50:
+                    st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다. (시간이 조금 더 걸립니다.)")
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read())
+                    
+                    progress_bar = st.progress(0)
+                    for i, img in enumerate(images):
+                        text += pytesseract.image_to_string(img, lang='kor+eng') + "\n"
+                        progress_bar.progress((i + 1) / len(images))
+                    progress_bar.empty()
+                    
+            except Exception as e:
+                st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+                st.stop()
 
-        cost_match = re.search(r'총공사비.*?([\d,]+)\s*억', text)
-        area_match = re.search(r'연면적.*?([\d,]+)\s*㎡', text)
-
-        extracted_cost = int(cost_match.group(1).replace(',', '')) if cost_match else 0
-        extracted_area = int(area_match.group(1).replace(',', '')) if area_match else 0
-        
-        st.success("✅ 문서 분석 및 법령 대조가 완료되었습니다.")
-        
-        t1, t2, t3, t4 = st.tabs([
-            "1️⃣ 기본 규모 및 시설", 
-            "2️⃣ 품질관리계획 적절성", 
-            "3️⃣ 공종별 시험/장비 상세검증",
-            "4️⃣ 검토/승인 절차"
-        ])
-        
-        def highlight_status(val):
-            if '적정' in val: return 'color: #155724; background-color: #d4edda; font-weight: bold'
-            elif '보완' in val or '미달' in val: return 'color: #721c24; background-color: #f8d7da; font-weight: bold'
-            return ''
-
-        with t1:
-            st.subheader("📌 프로젝트 규모 입력 및 법정 배치기준 확인")
-            st.markdown("문서에서 추출된 초기값이 자동 입력되어 있습니다. 실제 계획과 다를 경우 직접 수정하면 기준이 즉시 재계산됩니다.")
-            
-            # 입력 폼 배치
-            col_input1, col_input2 = st.columns(2)
-            with col_input1:
-                input_cost = st.number_input("총공사비 (단위: 억원)", min_value=0, value=extracted_cost, step=10)
-            with col_input2:
-                input_area = st.number_input("연면적 (단위: ㎡)", min_value=0, value=extracted_area, step=100)
-            
-            # 실시간 법정 기준 계산
+            # 기준 계산
             level, req_lab_size, req_personnel = check_facility_and_personnel(input_cost, input_area)
             
-            st.info("⚖️ **건설기술 진흥법 시행규칙 [별표 5] 기준 자동 산출 결과**")
-            st.write(f"- **대상공사 구분:** {level}")
-            st.write(f"- **최소 시험실 규모:** {req_lab_size} ㎡ 이상")
-            st.write(f"- **최소 배치 인력:** {', '.join(req_personnel)}")
+            st.success("✅ 문서 분석 및 법령 대조가 완료되었습니다. 아래 탭을 클릭하여 결과를 확인하세요.")
             
-            st.divider()
+            t1, t2, t3, t4 = st.tabs([
+                "1️⃣ 기본 규모 및 시설", 
+                "2️⃣ 품질관리계획 적절성", 
+                "3️⃣ 공종별 시험/장비 상세검증",
+                "4️⃣ 검토/승인 절차"
+            ])
+            
+            def highlight_status(val):
+                if '적정' in val: return 'color: #155724; background-color: #d4edda; font-weight: bold'
+                elif '보완' in val or '미달' in val: return 'color: #721c24; background-color: #f8d7da; font-weight: bold'
+                return ''
+
+            with t1:
+                st.subheader("📌 프로젝트 규모 입력 및 법정 배치기준 결과")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.info("사용자 입력 정보")
+                    st.write(f"- **입력 총공사비:** {input_cost} 억원")
+                    st.write(f"- **입력 연면적:** {input_area} ㎡")
+                with col_b:
+                    st.warning("건설기술 진흥법 시행규칙 [별표 5] 기준 산출")
+                    st.write(f"- **대상공사 구분:** {level}")
+                    st.write(f"- **최소 시험실 규모:** {req_lab_size} ㎡ 이상")
+                    st.write(f"- **최소 배치 인력:** {', '.join(req_personnel)}")
+                    
+                st.markdown("#### [별표 9] 품질시험계획 필수항목 점검")
+                df_basic = analyze_detailed_checklist(text, qt_basic_rules, 0.7)
+                st.dataframe(df_basic.style.map(highlight_status, subset=['판정']), use_container_width=True)
+
+            with t2:
+                st.subheader("📋 품질관리계획 적절성 확인 (10대 핵심항목)")
+                df_qm = analyze_detailed_checklist(text, qm_10_rules, 0.5)
+                st.dataframe(df_qm.style.map(highlight_status, subset=['판정']), use_container_width=True)
+
+            with t3:
+                st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 상세점검")
+                st.markdown("**(안내) 본 프로젝트에 해당하는 공종만 확인하시면 됩니다.**")
                 
-            st.markdown("#### [별표 9] 품질시험계획 필수항목 점검")
-            df_basic = analyze_detailed_checklist(text, qt_basic_rules, 0.7)
-            st.dataframe(df_basic.style.map(highlight_status, subset=['판정']), use_container_width=True)
+                st.write("##### 1. 공종별 주요 시험종목 누락 점검 ([별표 2] 기준)")
+                df_test = analyze_detailed_checklist(text, qt_test_items_detailed, 0.3)
+                st.table(df_test) 
+                
+                st.write("##### 2. 필수 시험장비 보유 점검 ([별표 6] 기준)")
+                df_equip = analyze_detailed_checklist(text, equipment_rules_detailed, 0.4)
+                st.table(df_equip)
 
-        with t2:
-            st.subheader("📋 품질관리계획 적절성 확인 (10대 핵심항목)")
-            df_qm = analyze_detailed_checklist(text, qm_10_rules, 0.5)
-            st.dataframe(df_qm.style.map(highlight_status, subset=['판정']), use_container_width=True)
-
-        with t3:
-            st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 상세점검")
-            st.markdown("**(안내) 본 프로젝트에 해당하는 공종만 확인하시면 됩니다.**")
-            
-            st.write("##### 1. 공종별 주요 시험종목 누락 점검 ([별표 2] 기준)")
-            df_test = analyze_detailed_checklist(text, qt_test_items_detailed, 0.3)
-            st.table(df_test) 
-            
-            st.write("##### 2. 필수 시험장비 보유 점검 ([별표 6] 기준)")
-            df_equip = analyze_detailed_checklist(text, equipment_rules_detailed, 0.4)
-            st.table(df_equip)
-
-        with t4:
-            st.subheader("📝 검토 및 승인 절차 ([별지 1] 기준)")
-            df_approval = analyze_detailed_checklist(text, approval_rules, 0.6)
-            st.dataframe(df_approval.style.map(highlight_status, subset=['판정']), use_container_width=True)
+            with t4:
+                st.subheader("📝 검토 및 승인 절차 ([별지 1] 기준)")
+                df_approval = analyze_detailed_checklist(text, approval_rules, 0.6)
+                st.dataframe(df_approval.style.map(highlight_status, subset=['판정']), use_container_width=True)
