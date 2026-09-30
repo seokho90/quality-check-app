@@ -44,7 +44,7 @@ approval_rules = {
 qt_test_items_detailed = {
     "토공사(성토용 흙)": ["함수비", "입도", "밀도", "다짐", "액성한계", "소성한계", "노상토지지력비"],
     "기초공사(말뚝)": ["동재하", "정재하", "압축강도"],
-    "콘크리트용 골재": ["밀도", "흡수율", "조립률", "0.08밀리미터체", "안정성", "마모율"],
+    "콘크리트용 골재": ["밀도", "흡수율", "조립률", "0.08밀리미터", "안정성", "마모율"],
     "굳지 않은 콘크리트": ["슬럼프", "공기량", "염화물", "단위수량", "온도"],
     "굳은 콘크리트": ["압축강도", "휨강도"],
     "철근(콘크리트용 봉강)": ["항복점", "항복강도", "인장강도", "연신율", "치수"],
@@ -55,20 +55,22 @@ qt_test_items_detailed = {
 
 equipment_rules_detailed = {
     "공통/일반(인장·압축)": ["만능시험기", "압축시험기"],
-    "토질/골재 장비": ["건조로", "저울", "체가름시험기", "현장밀도시험기", "자동다짐기", "안정성시험용기구"],
-    "콘크리트 장비": ["모르타르혼합기", "항온수조", "슬럼프", "공기량시험기", "압축강도", "공시체"],
-    "아스팔트 장비": ["마샬안정도시험기", "아스팔트함량시험기", "코어채취기"]
+    "토질/골재 장비": ["건조로", "저울", "체가름", "현장밀도", "자동다짐기", "안정성"],
+    "콘크리트 장비": ["모르타르혼합기", "항온수조", "슬럼프", "공기량", "압축강도", "공시체"],
+    "아스팔트 장비": ["마샬안정도", "아스팔트함량", "코어채취기"]
 }
 
-# --- 3. 텍스트 스캔 및 판정 엔진 (상세 피드백용) ---
+# --- 3. 텍스트 스캔 및 판정 엔진 (인식률 대폭 개선) ---
 def analyze_detailed_checklist(text, rules, threshold=0.5):
     results = []
-    text_clean = text.replace(" ", "")
+    # 정규식을 사용하여 모든 공백, 탭, 줄바꿈(\n)을 완벽히 제거 (인식률 향상의 핵심)
+    text_clean = re.sub(r'\s+', '', text)
+    
     for category, keywords in rules.items():
         found = []
         missing = []
         for kw in keywords:
-            kw_clean = kw.replace(" ", "")
+            kw_clean = re.sub(r'\s+', '', kw)
             if kw_clean in text_clean:
                 found.append(kw)
             else:
@@ -78,18 +80,21 @@ def analyze_detailed_checklist(text, rules, threshold=0.5):
         status = "✅ 적정" if score >= threshold else "🚨 보완필요"
         
         if missing:
-            detail = f"[확인됨] {', '.join(found)}\n[누락됨] {', '.join(missing)}\n👉 보완조치: 별표 기준에 따라 '{', '.join(missing)}' 항목을 계획서에 추가 기재 요망."
+            detail = f"[확인됨] {', '.join(found)}\n[누락의심] {', '.join(missing)}\n👉 보완권고: 해당 항목을 명시해주세요."
         else:
-            detail = f"[확인됨] {', '.join(found)}\n👉 보완조치: 해당 공종의 법정 필수항목이 모두 명시됨."
+            detail = f"[확인됨] {', '.join(found)}\n👉 보완권고: 해당 항목이 모두 명시됨."
             
-        results.append({"종별(항목)": category, "판정": status, "세부 점검내역 및 수정권고": detail})
+        results.append({"종별(항목)": category, "판정": status, "세부 점검내역": detail})
     return pd.DataFrame(results)
 
 # --- 4. 웹 UI 구성 ---
 st.set_page_config(page_title="건설공사 품질시험계획서 통합 검증", page_icon="🏗️", layout="wide")
 
 st.title("🏗️ 품질관리/시험계획서 법령 통합 교차검증 시스템")
-st.markdown("**적용 법령 및 지침:** 건설공사 품질관리 업무지침, 건설기술 진흥법 시행령·시행규칙 전체")
+st.markdown("""
+**적용 법령 및 지침:** 건설공사 품질관리 업무지침, 건설기술 진흥법 시행령·시행규칙 전체
+*💡 안내: 문서 스캔 및 인식 한계로 표 구조의 글자가 누락될 수 있으니, [누락의심] 항목은 원본과 한 번 더 대조해 주시기 바랍니다.*
+""")
 st.divider()
 
 # --- 입력 섹션 ---
@@ -104,7 +109,6 @@ with col_input2:
 
 # 실행 버튼
 start_validation = st.button("🔍 교차검증 실행", type="primary", use_container_width=True)
-
 st.divider()
 
 # --- 검증 로직 실행 섹션 ---
@@ -114,7 +118,7 @@ if start_validation:
     elif input_cost == 0 and input_area == 0:
         st.warning("⚠️ 총공사비 또는 연면적을 올바르게 기입해주세요.")
     else:
-        with st.spinner("문서를 스캔하고 법령과 대조 중입니다..."):
+        with st.spinner("문서 전체를 압축 스캔하고 법령과 대조 중입니다..."):
             text = ""
             try:
                 with pdfplumber.open(uploaded_file) as pdf:
@@ -125,7 +129,7 @@ if start_validation:
                 
                 # 스캔본 판별 및 OCR 처리
                 if len(text.strip()) < 50:
-                    st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다. (시간이 조금 더 걸립니다.)")
+                    st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다.")
                     uploaded_file.seek(0)
                     images = convert_from_bytes(uploaded_file.read())
                     
@@ -180,8 +184,6 @@ if start_validation:
 
             with t3:
                 st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 상세점검")
-                st.markdown("**(안내) 본 프로젝트에 해당하는 공종만 확인하시면 됩니다.**")
-                
                 st.write("##### 1. 공종별 주요 시험종목 누락 점검 ([별표 2] 기준)")
                 df_test = analyze_detailed_checklist(text, qt_test_items_detailed, 0.3)
                 st.table(df_test) 
