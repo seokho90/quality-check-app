@@ -41,7 +41,6 @@ approval_rules = {
     "승인 절차 명시": ["검토", "승인", "적정", "조건부적정", "부적정", "시정요구", "조치확인"]
 }
 
-# [별표 2] 건설공사 품질시험기준 세분화 (종별 상세 내역 반영)
 qt_test_items_detailed = {
     "토공사(성토용 흙)": ["함수비", "입도", "밀도", "다짐", "액성한계", "소성한계", "노상토지지력비"],
     "기초공사(말뚝)": ["동재하", "정재하", "압축강도"],
@@ -54,7 +53,6 @@ qt_test_items_detailed = {
     "가설기자재(강관/파이프)": ["압축하중", "인장하중", "휨하중"]
 }
 
-# [별표 6] 시험장비 보유기준 세분화
 equipment_rules_detailed = {
     "공통/일반(인장·압축)": ["만능시험기", "압축시험기"],
     "토질/골재 장비": ["건조로", "저울", "체가름시험기", "현장밀도시험기", "자동다짐기", "안정성시험용기구"],
@@ -79,7 +77,6 @@ def analyze_detailed_checklist(text, rules, threshold=0.5):
         score = len(found) / len(keywords) if keywords else 0
         status = "✅ 적정" if score >= threshold else "🚨 보완필요"
         
-        # 상세 결과 메시지 포매팅
         if missing:
             detail = f"[확인됨] {', '.join(found)}\n[누락됨] {', '.join(missing)}\n👉 보완조치: 별표 기준에 따라 '{', '.join(missing)}' 항목을 계획서에 추가 기재 요망."
         else:
@@ -101,14 +98,12 @@ if uploaded_file is not None:
     with st.spinner("문서를 스캔 중입니다..."):
         text = ""
         try:
-            # 1차 시도: 일반 텍스트 추출
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
                     extracted = page.extract_text()
                     if extracted:
                         text += extracted + "\n"
             
-            # 2차 시도: 글자가 너무 적으면 스캔본으로 간주하여 OCR 수행
             if len(text.strip()) < 50:
                 st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다. (시간이 조금 더 걸립니다.)")
                 uploaded_file.seek(0)
@@ -126,13 +121,9 @@ if uploaded_file is not None:
 
         cost_match = re.search(r'총공사비.*?([\d,]+)\s*억', text)
         area_match = re.search(r'연면적.*?([\d,]+)\s*㎡', text)
-        lab_size_match = re.search(r'시험실\s*규모.*?([\d.]+)\s*㎡', text)
 
-        cost = int(cost_match.group(1).replace(',', '')) if cost_match else 0
-        area = int(area_match.group(1).replace(',', '')) if area_match else 0
-        lab_size = float(lab_size_match.group(1)) if lab_size_match else 0.0
-
-        level, req_lab_size, req_personnel = check_facility_and_personnel(cost, area)
+        extracted_cost = int(cost_match.group(1).replace(',', '')) if cost_match else 0
+        extracted_area = int(area_match.group(1).replace(',', '')) if area_match else 0
         
         st.success("✅ 문서 분석 및 법령 대조가 완료되었습니다.")
         
@@ -149,18 +140,25 @@ if uploaded_file is not None:
             return ''
 
         with t1:
-            st.subheader("📌 프로젝트 개요 및 법정 배치기준 검증")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.info("문서 내 추출 데이터")
-                st.write(f"- **총공사비:** {cost} 억원")
-                st.write(f"- **연면적:** {area} ㎡")
-                st.write(f"- **계획 시험실 면적:** {lab_size} ㎡")
-            with col_b:
-                st.warning("건설기술 진흥법 시행규칙 [별표 5] 기준")
-                st.write(f"- **요구 등급:** {level}")
-                st.write(f"- **최소 면적:** {req_lab_size} ㎡ 이상")
-                st.write(f"- **최소 인력:** {', '.join(req_personnel)}")
+            st.subheader("📌 프로젝트 규모 입력 및 법정 배치기준 확인")
+            st.markdown("문서에서 추출된 초기값이 자동 입력되어 있습니다. 실제 계획과 다를 경우 직접 수정하면 기준이 즉시 재계산됩니다.")
+            
+            # 입력 폼 배치
+            col_input1, col_input2 = st.columns(2)
+            with col_input1:
+                input_cost = st.number_input("총공사비 (단위: 억원)", min_value=0, value=extracted_cost, step=10)
+            with col_input2:
+                input_area = st.number_input("연면적 (단위: ㎡)", min_value=0, value=extracted_area, step=100)
+            
+            # 실시간 법정 기준 계산
+            level, req_lab_size, req_personnel = check_facility_and_personnel(input_cost, input_area)
+            
+            st.info("⚖️ **건설기술 진흥법 시행규칙 [별표 5] 기준 자동 산출 결과**")
+            st.write(f"- **대상공사 구분:** {level}")
+            st.write(f"- **최소 시험실 규모:** {req_lab_size} ㎡ 이상")
+            st.write(f"- **최소 배치 인력:** {', '.join(req_personnel)}")
+            
+            st.divider()
                 
             st.markdown("#### [별표 9] 품질시험계획 필수항목 점검")
             df_basic = analyze_detailed_checklist(text, qt_basic_rules, 0.7)
@@ -177,7 +175,7 @@ if uploaded_file is not None:
             
             st.write("##### 1. 공종별 주요 시험종목 누락 점검 ([별표 2] 기준)")
             df_test = analyze_detailed_checklist(text, qt_test_items_detailed, 0.3)
-            st.table(df_test) # 긴 텍스트 출력을 위해 dataframe 대신 table 사용
+            st.table(df_test) 
             
             st.write("##### 2. 필수 시험장비 보유 점검 ([별표 6] 기준)")
             df_equip = analyze_detailed_checklist(text, equipment_rules_detailed, 0.4)
