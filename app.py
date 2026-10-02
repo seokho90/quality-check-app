@@ -1,198 +1,75 @@
 import streamlit as st
-import pdfplumber
-import re
-import pandas as pd
-import pytesseract
-from pdf2image import convert_from_bytes
+import google.generativeai as genai
+import tempfile
+import os
 
-# --- 1. [별표 5] 법정 시설 및 인력 기준 산출 ---
-def check_facility_and_personnel(cost, area):
-    if cost >= 1000 or area >= 50000:
-        return "특급 품질관리", 50, ["특급 1명(경력 3년 이상)", "중급 1명 이상", "초급 1명 이상"]
-    elif cost >= 500 or area >= 30000:
-        return "고급 품질관리", 50, ["고급 1명(경력 2년 이상)", "중급 1명 이상", "초급 1명 이상"]
-    elif cost >= 100 or area >= 5000:
-        return "중급 품질관리", 18, ["중급 1명(경력 1년 이상)", "초급 1명 이상"]
-    else:
-        return "초급 품질관리", 18, ["초급 1명 이상"]
-
-# --- 2. 종합 법령/지침 기반 키워드 룰셋 ---
-qm_10_rules = {
-    "1. 일반사항": ["작성근거", "개정현황", "문서번호"],
-    "2. 적용범위 및 인용표준": ["적용범위", "인용표준", "ISO"],
-    "3. 용어 정의": ["용어", "정의"],
-    "4. 조직 상황": ["정보", "이해관계자", "프로세스", "요구사항"],
-    "5. 리더십": ["품질방침", "책임", "권한", "조직"],
-    "6. 기획": ["리스크", "기회", "품질목표", "추진계획"],
-    "7. 지원": ["자원관리", "모니터링", "역량", "적격성", "교육훈련", "의사소통", "문서화된정보"],
-    "8. 운용": ["설계관리", "기자재구매", "하도급", "중점품질관리", "식별및추적", "검사및시험", "부적합공사"],
-    "9. 성과관리": ["고객만족", "분석및평가", "내부심사", "경영검토"],
-    "10. 개선": ["부적합", "시정조치", "지속적개선"]
-}
-
-qt_basic_rules = {
-    "1. 공사 개요": ["공사명", "시공자", "현장대리인"],
-    "2. 시험 계획": ["공종", "시험종목", "계획물량", "시험빈도", "시험횟수"],
-    "3. 시험 시설": ["장비명", "규격", "단위", "수량", "배치평면도"],
-    "4. 품질관리 인력": ["성명", "등급", "배치계획", "자격", "경력"]
-}
-
-approval_rules = {
-    "승인 절차 명시": ["검토", "승인", "적정", "조건부적정", "부적정", "시정요구", "조치확인"]
-}
-
-qt_test_items_detailed = {
-    "토공사(성토용 흙)": ["함수비", "입도", "밀도", "다짐", "액성한계", "소성한계", "노상토지지력비"],
-    "기초공사(말뚝)": ["동재하", "정재하", "압축강도"],
-    "콘크리트용 골재": ["밀도", "흡수율", "조립률", "0.08밀리미터", "안정성", "마모율"],
-    "굳지 않은 콘크리트": ["슬럼프", "공기량", "염화물", "단위수량", "온도"],
-    "굳은 콘크리트": ["압축강도", "휨강도"],
-    "철근(콘크리트용 봉강)": ["항복점", "항복강도", "인장강도", "연신율", "치수"],
-    "철강구조물(강재/용접)": ["내부결함", "초음파탐상", "자분탐상", "항복점", "인장강도", "연신율"],
-    "아스팔트 혼합물": ["밀도", "안정성", "마샬안정도", "역청함유량", "코어"],
-    "가설기자재(강관/파이프)": ["압축하중", "인장하중", "휨하중"]
-}
-
-equipment_rules_detailed = {
-    "공통/일반(인장·압축)": ["만능시험기", "압축시험기"],
-    "토질/골재 장비": ["건조로", "저울", "체가름", "현장밀도", "자동다짐기", "안정성"],
-    "콘크리트 장비": ["모르타르혼합기", "항온수조", "슬럼프", "공기량", "압축강도", "공시체"],
-    "아스팔트 장비": ["마샬안정도", "아스팔트함량", "코어채취기"]
-}
-
-# --- 3. 텍스트 스캔 및 판정 엔진 (인식률 대폭 개선) ---
-def analyze_detailed_checklist(text, rules, threshold=0.5):
-    results = []
-    # 정규식을 사용하여 모든 공백, 탭, 줄바꿈(\n)을 완벽히 제거 (인식률 향상의 핵심)
-    text_clean = re.sub(r'\s+', '', text)
-    
-    for category, keywords in rules.items():
-        found = []
-        missing = []
-        for kw in keywords:
-            kw_clean = re.sub(r'\s+', '', kw)
-            if kw_clean in text_clean:
-                found.append(kw)
-            else:
-                missing.append(kw)
-        
-        score = len(found) / len(keywords) if keywords else 0
-        status = "✅ 적정" if score >= threshold else "🚨 보완필요"
-        
-        if missing:
-            detail = f"[확인됨] {', '.join(found)}\n[누락의심] {', '.join(missing)}\n👉 보완권고: 해당 항목을 명시해주세요."
-        else:
-            detail = f"[확인됨] {', '.join(found)}\n👉 보완권고: 해당 항목이 모두 명시됨."
-            
-        results.append({"종별(항목)": category, "판정": status, "세부 점검내역": detail})
-    return pd.DataFrame(results)
-
-# --- 4. 웹 UI 구성 ---
-st.set_page_config(page_title="건설공사 품질시험계획서 통합 검증", page_icon="🏗️", layout="wide")
-
-st.title("🏗️ 품질관리/시험계획서 법령 통합 교차검증 시스템")
+# --- 1. 웹사이트 기본 설정 ---
+st.set_page_config(page_title="AI 기반 품질시험계획서 검증", page_icon="🏗️", layout="wide")
+st.title("🏗️ AI 기반 품질관리/시험계획서 자동 검증")
 st.markdown("""
-**적용 법령 및 지침:** 건설공사 품질관리 업무지침, 건설기술 진흥법 시행령·시행규칙 전체
-*💡 안내: 문서 스캔 및 인식 한계로 표 구조의 글자가 누락될 수 있으니, [누락의심] 항목은 원본과 한 번 더 대조해 주시기 바랍니다.*
+스캔된 문서도 완벽하게 읽어내는 **Vision AI**를 적용했습니다. 
+계획서를 업로드하시면 법령([별표 2, 5, 6, 9], [별지 1, 2])을 바탕으로 누락된 항목을 꼼꼼히 짚어드립니다.
 """)
 st.divider()
 
-# --- 입력 섹션 ---
-st.subheader("1️⃣ 검증 기본 정보 입력")
-uploaded_file = st.file_uploader("검증할 계획서 원본(또는 스캔본 PDF)을 업로드 하세요.", type="pdf")
+# --- 2. API 키 안전하게 불러오기 ---
+try:
+    # Streamlit Cloud의 보안 설정(Secrets)에서 API 키를 가져옵니다.
+    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=api_key)
+except Exception:
+    st.error("⚠️ 시스템 오류: API 키가 설정되지 않았습니다. 4단계(Secrets) 설정을 확인해주세요.")
+    st.stop()
 
-col_input1, col_input2 = st.columns(2)
-with col_input1:
-    input_cost = st.number_input("총공사비 (단위: 억원)", min_value=0, value=0, step=10)
-with col_input2:
-    input_area = st.number_input("연면적 (단위: ㎡)", min_value=0, value=0, step=100)
+# 가장 똑똑한 모델인 gemini-1.5-pro 사용
+model = genai.GenerativeModel('gemini-1.5-pro')
 
-# 실행 버튼
-start_validation = st.button("🔍 교차검증 실행", type="primary", use_container_width=True)
-st.divider()
+# --- 3. 파일 업로드 및 검증 실행 ---
+uploaded_file = st.file_uploader("검증할 계획서(PDF)를 이곳에 업로드하세요.", type="pdf")
 
-# --- 검증 로직 실행 섹션 ---
-if start_validation:
-    if uploaded_file is None:
-        st.warning("⚠️ PDF 파일을 먼저 업로드해주세요.")
-    elif input_cost == 0 and input_area == 0:
-        st.warning("⚠️ 총공사비 또는 연면적을 올바르게 기입해주세요.")
-    else:
-        with st.spinner("문서 전체를 압축 스캔하고 법령과 대조 중입니다..."):
-            text = ""
+if uploaded_file is not None:
+    if st.button("🚀 AI 교차검증 시작", type="primary", use_container_width=True):
+        with st.spinner("AI가 스캔된 표의 문맥을 분석하고 법령과 대조 중입니다. (문서 길이에 따라 10~30초 소요)"):
+            
+            # PDF 파일을 AI가 읽을 수 있도록 임시 저장
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                tmp_file_path = tmp_file.name
+
             try:
-                with pdfplumber.open(uploaded_file) as pdf:
-                    for page in pdf.pages:
-                        extracted = page.extract_text()
-                        if extracted:
-                            text += extracted + "\n"
+                # 구글 AI 서버로 파일 업로드
+                uploaded_pdf = genai.upload_file(path=tmp_file_path)
+
+                # AI에게 내릴 강력한 지시사항(프롬프트)
+                prompt = """
+                당신은 대한민국 건설공사 품질관리 전문 최고 심사관입니다.
+                첨부된 품질시험계획서(또는 품질관리계획서) PDF의 모든 표와 내용을 분석하여 
+                다음의 '건설기술 진흥법' 및 '품질관리 업무지침' 기준에 따라 적절성을 검증해 주세요.
+
+                [검증 필수 항목]
+                1. 시행규칙 [별표 5]: 총공사비 및 연면적을 찾아내어, 그 규모에 맞는 '품질관리 대상 등급(특급/고급/중급/초급)', '최소 시험실 규모(㎡)', '최소 배치 기술인 수와 등급'이 올바르게 계획되었는지 판별.
+                2. 업무지침 [별표 2]: 문서에 명시된 공종들을 파악하고, 각 공종에 필수적인 '시험 종목'이 누락 없이 기재되었는지 점검.
+                3. 업무지침 [별표 6]: 해당 공종에 반드시 필요한 '시험 장비'가 보유 장비 목록에 명시되어 있는지 점검.
+                4. 시행령 [별표 9] 및 업무지침 [별지 2]: 기타 필수 기재사항(공사개요, 시험빈도, 검토/승인 절차 등) 누락 여부.
+
+                [출력 형식]
+                결과를 마크다운(Markdown) 표와 글머리 기호를 활용하여 보기 좋고 깔끔하게 정리해 주세요.
+                누락되거나 미달된 부분은 🚨 이모지와 함께 '보완 권고 사항'으로 명확히 짚어주세요.
+                """
+
+                # 분석 결과 생성
+                response = model.generate_content([uploaded_pdf, prompt])
                 
-                # 스캔본 판별 및 OCR 처리
-                if len(text.strip()) < 50:
-                    st.warning("📷 스캔된 이미지 문서로 인식되었습니다. OCR(광학 문자 인식)을 수행합니다.")
-                    uploaded_file.seek(0)
-                    images = convert_from_bytes(uploaded_file.read())
-                    
-                    progress_bar = st.progress(0)
-                    for i, img in enumerate(images):
-                        text += pytesseract.image_to_string(img, lang='kor+eng') + "\n"
-                        progress_bar.progress((i + 1) / len(images))
-                    progress_bar.empty()
-                    
+                st.success("✅ AI 검증이 완료되었습니다!")
+                st.markdown(response.text)
+
             except Exception as e:
-                st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
-                st.stop()
-
-            # 기준 계산
-            level, req_lab_size, req_personnel = check_facility_and_personnel(input_cost, input_area)
-            
-            st.success("✅ 문서 분석 및 법령 대조가 완료되었습니다. 아래 탭을 클릭하여 결과를 확인하세요.")
-            
-            t1, t2, t3, t4 = st.tabs([
-                "1️⃣ 기본 규모 및 시설", 
-                "2️⃣ 품질관리계획 적절성", 
-                "3️⃣ 공종별 시험/장비 상세검증",
-                "4️⃣ 검토/승인 절차"
-            ])
-            
-            def highlight_status(val):
-                if '적정' in val: return 'color: #155724; background-color: #d4edda; font-weight: bold'
-                elif '보완' in val or '미달' in val: return 'color: #721c24; background-color: #f8d7da; font-weight: bold'
-                return ''
-
-            with t1:
-                st.subheader("📌 프로젝트 규모 입력 및 법정 배치기준 결과")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.info("사용자 입력 정보")
-                    st.write(f"- **입력 총공사비:** {input_cost} 억원")
-                    st.write(f"- **입력 연면적:** {input_area} ㎡")
-                with col_b:
-                    st.warning("건설기술 진흥법 시행규칙 [별표 5] 기준 산출")
-                    st.write(f"- **대상공사 구분:** {level}")
-                    st.write(f"- **최소 시험실 규모:** {req_lab_size} ㎡ 이상")
-                    st.write(f"- **최소 배치 인력:** {', '.join(req_personnel)}")
-                    
-                st.markdown("#### [별표 9] 품질시험계획 필수항목 점검")
-                df_basic = analyze_detailed_checklist(text, qt_basic_rules, 0.7)
-                st.dataframe(df_basic.style.map(highlight_status, subset=['판정']), use_container_width=True)
-
-            with t2:
-                st.subheader("📋 품질관리계획 적절성 확인 (10대 핵심항목)")
-                df_qm = analyze_detailed_checklist(text, qm_10_rules, 0.5)
-                st.dataframe(df_qm.style.map(highlight_status, subset=['판정']), use_container_width=True)
-
-            with t3:
-                st.subheader("🔬 공종별 품질시험 기준 및 장비 보유 상세점검")
-                st.write("##### 1. 공종별 주요 시험종목 누락 점검 ([별표 2] 기준)")
-                df_test = analyze_detailed_checklist(text, qt_test_items_detailed, 0.3)
-                st.table(df_test) 
-                
-                st.write("##### 2. 필수 시험장비 보유 점검 ([별표 6] 기준)")
-                df_equip = analyze_detailed_checklist(text, equipment_rules_detailed, 0.4)
-                st.table(df_equip)
-
-            with t4:
-                st.subheader("📝 검토 및 승인 절차 ([별지 1] 기준)")
-                df_approval = analyze_detailed_checklist(text, approval_rules, 0.6)
-                st.dataframe(df_approval.style.map(highlight_status, subset=['판정']), use_container_width=True)
+                st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+            finally:
+                # 분석이 끝나면 서버 용량 관리를 위해 임시 파일 삭제
+                if os.path.exists(tmp_file_path):
+                    os.remove(tmp_file_path)
+                try:
+                    genai.delete_file(uploaded_pdf.name)
+                except:
+                    pass
